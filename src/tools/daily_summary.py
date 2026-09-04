@@ -101,7 +101,7 @@ def _classify_emails_with_llm(emails_data: list) -> dict:
     "other": 0
   }},
   "important_summaries": [
-    {{"index": 0, "from": "发件人", "subject": "主题", "summary": "详细摘要（2-3句话）"}}
+    {{"index": 0, "from": "发件人", "subject": "主题", "summary": "详细摘要（2-3句话）", "message_id": "邮件的Message-ID"}}
   ]
 }}"""
 
@@ -133,7 +133,11 @@ def _classify_emails_with_llm(emails_data: list) -> dict:
                 for i in range(len(emails_data))
             ],
             "category_counts": {"other": len(emails_data)},
-            "important_summaries": [],
+            "important_summaries": [
+                {"index": i, "from": emails_data[i].get("from", ""), "subject": emails_data[i].get("subject", ""),
+                 "summary": "分类失败", "message_id": emails_data[i].get("message_id", "")}
+                for i in range(len(emails_data))
+            ],
         }
 
 
@@ -176,23 +180,39 @@ def _generate_html_report(
             if is_important
             else ""
         )
+        # 重要邮件主题添加 Gmail 跳转链接
+        message_id = em.get("message_id", "")
+        subject_display = em.get('subject', '')
+        if is_important and message_id:
+            gmail_link = f'https://mail.google.com/mail/u/0/#search/rfc822msgid:{message_id}'
+            subject_display = f"<a href='{gmail_link}' target='_blank' style='color:#1a73e8;text-decoration:none;'>{em.get('subject', '')}</a>"
         email_rows += f"""<tr>
 <td style='padding:8px;border:1px solid #e0e0e0;'>{em.get('from', '')}</td>
-<td style='padding:8px;border:1px solid #e0e0e0;'>{em.get('subject', '')}</td>
+<td style='padding:8px;border:1px solid #e0e0e0;'>{subject_display}</td>
 <td style='padding:8px;border:1px solid #e0e0e0;text-align:center;'>{badge}{cat_name}</td>
 <td style='padding:8px;border:1px solid #e0e0e0;'>{summary_text}</td>
 </tr>\n"""
 
-    # 重要邮件摘要
+    # 重要邮件摘要（带 Gmail 跳转链接）
     important_section = ""
     if important_summaries:
         important_items = ""
         for imp in important_summaries:
+            message_id = imp.get("message_id", "")
+            # 构造 Gmail 跳转链接
+            gmail_link = ""
+            if message_id:
+                gmail_link = f'https://mail.google.com/mail/u/0/#search/rfc822msgid:{message_id}'
+            link_html = ""
+            if gmail_link:
+                link_html = f"""<a href='{gmail_link}' target='_blank' style='color:#1a73e8;text-decoration:none;font-size:13px;margin-top:4px;display:inline-block;'> 在 Gmail 中打开 →</a>"""
+
             important_items += f"""
 <div style='background:#fff3cd;border-left:4px solid #ffc107;padding:12px;margin-bottom:8px;border-radius:4px;'>
-<strong>📌 {imp.get('subject', '')}</strong><br>
+<strong> {imp.get('subject', '')}</strong><br>
 <span style='color:#666;font-size:13px;'>来自: {imp.get('from', '')}</span><br>
 <span style='margin-top:4px;display:block;'>{imp.get('summary', '')}</span>
+{link_html}
 </div>"""
         important_section = f"""
 <div style='margin:24px 0;'>
@@ -355,12 +375,18 @@ def _daily_summary_impl() -> str:
                 date_str_email = msg.get("Date", "")
                 body = extract_body(msg, max_length=800)
 
+                # 获取 Message-ID 用于构造 Gmail 跳转链接
+                message_id = msg.get("Message-ID", "").strip()
+                # 去掉尖括号，用于 URL 拼接
+                message_id_clean = message_id.strip("<>") if message_id else ""
+
                 emails_data.append({
                     "from": from_addr,
                     "to": to_addr,
                     "subject": subject,
                     "date": date_str_email,
                     "body_preview": body[:500] if body else "(无正文)",
+                    "message_id": message_id_clean,
                 })
 
             logger.info(f"获取到 {len(emails_data)} 封今日邮件，开始 LLM 分类")
