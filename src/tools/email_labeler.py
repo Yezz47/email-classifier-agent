@@ -6,31 +6,13 @@ import logging
 from typing import Optional
 
 from langchain.tools import tool
-from coze_workload_identity import Client
 from cozeloop.decorator import observe
 from coze_coding_utils.log.write_log import request_context
 from coze_coding_utils.runtime_ctx.context import new_context
 
+from tools.email_common import get_email_config, connect_imap
+
 logger = logging.getLogger(__name__)
-
-
-def _get_email_config() -> dict:
-    """获取邮件配置信息"""
-    client = Client()
-    email_credential = client.get_integration_credential("integration-email-imap-smtp")
-    return json.loads(email_credential)
-
-
-def _connect_imap(config: dict) -> imaplib.IMAP4_SSL:
-    """建立 IMAP SSL 连接并登录"""
-    imap_server = config["imap_server"]
-    imap_port = int(config.get("imap_port", 993))
-    account = config["account"]
-    auth_code = config["auth_code"]
-
-    conn = imaplib.IMAP4_SSL(imap_server, imap_port)
-    conn.login(account, auth_code)
-    return conn
 
 
 # Gmail 标签到 IMAP 文件夹的映射
@@ -67,8 +49,8 @@ def _label_email_impl(
     """邮件标记核心逻辑"""
     ctx = request_context.get() or new_context(method="label_email")
     try:
-        config = _get_email_config()
-        conn = _connect_imap(config)
+        config = get_email_config()
+        conn = connect_imap(config)
 
         try:
             # 选择文件夹（需要可写模式）
@@ -122,13 +104,10 @@ def _label_email_impl(
                     }, ensure_ascii=False)
 
             elif action == "archive":
-                # 归档：通过删除 \\Seen 标志并 COPY 到 All Mail，然后标记删除
-                # Gmail 的归档逻辑：从 INBOX 移走即可（COPY 到 [Gmail]/All Mail + DELETE from INBOX）
+                # 归档：COPY 到 All Mail + DELETE from INBOX
                 archive_folder = "[Gmail]/All Mail"
-                # 先尝试 COPY
                 status, _ = conn.copy(uid, archive_folder)
                 if status == "OK":
-                    # 标记为从当前文件夹删除
                     conn.store(uid, "+FLAGS", "\\Deleted")
                     conn.expunge()
                     return json.dumps({
@@ -136,7 +115,6 @@ def _label_email_impl(
                         "message": f"邮件 {uid} 已归档"
                     }, ensure_ascii=False)
                 else:
-                    # 如果不支持 COPY，尝试直接标记删除
                     conn.store(uid, "+FLAGS", "\\Deleted")
                     conn.expunge()
                     return json.dumps({
@@ -152,7 +130,6 @@ def _label_email_impl(
                         "message": "移动邮件需要指定 target_folder 参数"
                     }, ensure_ascii=False)
 
-                # 支持 Gmail 标签映射
                 actual_folder = GMAIL_LABEL_MAP.get(target_folder.lower(), target_folder)
 
                 status, _ = conn.copy(uid, actual_folder)
@@ -179,7 +156,6 @@ def _label_email_impl(
                         "message": f"邮件 {uid} 已标记为重要"
                     }, ensure_ascii=False)
                 else:
-                    # 退而使用 Flagged 标志
                     conn.store(uid, "+FLAGS", "\\Flagged")
                     return json.dumps({
                         "status": "success",

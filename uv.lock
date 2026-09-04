@@ -2715,6 +2715,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "alembic" },
+    { name = "apscheduler" },
     { name = "boto3" },
     { name = "chardet" },
     { name = "coze-coding-dev-sdk" },
@@ -2760,6 +2761,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.16,<2" },
+    { name = "apscheduler", specifier = ">=3.11.2" },
     { name = "boto3", specifier = ">=1.40,<2" },
     { name = "chardet", specifier = ">=5.2,<6" },
     { name = "coze-coding-dev-sdk", specifier = ">0.5.0,<1" },

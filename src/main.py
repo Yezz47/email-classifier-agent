@@ -280,7 +280,19 @@ async def lifespan(app: FastAPI):
         session_factory=get_session, engine=engine,
         graph=async_graph, checkpointer=checkpointer,
     )
+    # 启动每日邮件总结定时调度器（每天 23:30 CST）
+    try:
+        from tools.scheduler import start_scheduler
+        start_scheduler()
+    except Exception as e:
+        logger.warning(f"启动定时调度器时出错: {e}")
     yield
+    # 停止定时调度器
+    try:
+        from tools.scheduler import stop_scheduler
+        stop_scheduler()
+    except Exception as e:
+        logger.warning(f"停止定时调度器时出错: {e}")
     if async_runtime is not None:
         await async_runtime.shutdown()
 

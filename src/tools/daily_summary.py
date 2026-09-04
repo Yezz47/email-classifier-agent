@@ -1,0 +1,405 @@
+"""每日邮件总结工具 - 获取当日邮件、LLM分类统计、生成HTML报告并通过SMTP发送"""
+
+import os
+import json
+import email
+import logging
+import smtplib
+import ssl
+import time
+from datetime import datetime, timedelta, timezone
+from email.mime.text import MIMEText
+from email.header import Header
+from email.utils import formataddr, formatdate, make_msgid
+
+from langchain.tools import tool
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+from cozeloop.decorator import observe
+from coze_coding_utils.runtime_ctx.context import default_headers
+from coze_coding_utils.log.write_log import request_context
+from coze_coding_utils.runtime_ctx.context import new_context
+
+from tools.email_common import get_email_config, connect_imap, decode_header_value, extract_body
+
+logger = logging.getLogger(__name__)
+
+# 中国标准时区
+CST = timezone(timedelta(hours=8))
+
+# 邮件分类定义
+EMAIL_CATEGORIES = {
+    "work": "工作",
+    "personal": "个人",
+    "promotion": "促销",
+    "finance": "财务",
+    "notification": "通知",
+    "social": "社交",
+    "important": "重要",
+    "other": "其他",
+}
+
+
+# ─────────────────── LLM 分类与总结 ───────────────────
+
+def _classify_emails_with_llm(emails_data: list) -> dict:
+    """使用 LLM 对邮件进行分类和摘要生成"""
+    workspace_path = os.getenv("COZE_WORKSPACE_PATH", "/workspace/projects")
+    config_path = os.path.join(workspace_path, "config/agent_llm_config.json")
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+
+    api_key = os.getenv("COZE_WORKLOAD_IDENTITY_API_KEY")
+    base_url = os.getenv("COZE_INTEGRATION_MODEL_BASE_URL")
+
+    llm = ChatOpenAI(
+        model=cfg["config"].get("model"),
+        api_key=api_key,
+        base_url=base_url,
+        temperature=0.3,
+        timeout=cfg["config"].get("timeout", 300),
+        max_tokens=cfg["config"].get("max_completion_tokens", 10000),
+        extra_body={
+            "thinking": {
+                "type": cfg["config"].get("thinking", "disabled")
+            }
+        },
+    )
+
+    emails_json = json.dumps(emails_data, ensure_ascii=False, indent=2)
+
+    prompt = f"""你是一个专业的邮件分类助手。请对以下今日收到的邮件进行分类和总结。
+
+分类规则：
+- work（工作）：来自同事、客户、合作伙伴的工作相关邮件，包含项目、会议、报告等内容
+- personal（个人）：来自朋友、家人的私人邮件
+- promotion（促销）：营销推广、优惠活动、广告类邮件
+- finance（财务）：银行通知、账单、发票、交易确认等财务相关邮件
+- notification（通知）：系统通知、订阅确认、服务更新等自动化通知
+- social（社交）：社交媒体平台的通知、邀请、动态更新
+- important（重要）：需要紧急处理或高优先级的邮件
+- other（其他）：无法归入以上类别的邮件
+
+邮件列表：
+{emails_json}
+
+请严格按以下 JSON 格式返回结果，不要输出任何其他内容：
+{{
+  "classifications": [
+    {{"index": 0, "category": "work", "is_important": true, "summary": "一句话摘要"}},
+    ...
+  ],
+  "category_counts": {{
+    "work": 0,
+    "personal": 0,
+    "promotion": 0,
+    "finance": 0,
+    "notification": 0,
+    "social": 0,
+    "important": 0,
+    "other": 0
+  }},
+  "important_summaries": [
+    {{"index": 0, "from": "发件人", "subject": "主题", "summary": "详细摘要（2-3句话）"}}
+  ]
+}}"""
+
+    messages = [HumanMessage(content=prompt)]
+    response = llm.invoke(messages)
+    # response.content 可能是 str 或 list（多模态场景），统一转为 str
+    raw_content = response.content
+    if isinstance(raw_content, list):
+        content = " ".join(
+            item if isinstance(item, str) else item.get("text", "")
+            for item in raw_content
+        ).strip()
+    else:
+        content = str(raw_content).strip()
+
+    # 提取 JSON（兼容 markdown 代码块包裹）
+    if "```json" in content:
+        content = content.split("```json")[1].split("```")[0].strip()
+    elif "```" in content:
+        content = content.split("```")[1].split("```")[0].strip()
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        logger.error(f"LLM 返回的内容无法解析为 JSON: {content[:500]}")
+        return {
+            "classifications": [
+                {"index": i, "category": "other", "is_important": False, "summary": "分类失败"}
+                for i in range(len(emails_data))
+            ],
+            "category_counts": {"other": len(emails_data)},
+            "important_summaries": [],
+        }
+
+
+# ─────────────────── HTML 报告生成 ───────────────────
+
+def _generate_html_report(
+    today_str: str,
+    emails_data: list,
+    classification_result: dict,
+) -> str:
+    """生成 HTML 格式的每日邮件总结报告"""
+    total = len(emails_data)
+    category_counts = classification_result.get("category_counts", {})
+    important_summaries = classification_result.get("important_summaries", [])
+    classifications = classification_result.get("classifications", [])
+
+    # 分类统计行
+    category_rows = ""
+    for cat_key, cat_name in EMAIL_CATEGORIES.items():
+        count = category_counts.get(cat_key, 0)
+        if count > 0:
+            category_rows += f"<tr><td style='padding:8px;border:1px solid #e0e0e0;'>{cat_name}</td><td style='padding:8px;border:1px solid #e0e0e0;text-align:center;'>{count}</td></tr>\n"
+
+    # 邮件明细行
+    email_rows = ""
+    for i, em in enumerate(emails_data):
+        cat = "other"
+        is_important = False
+        summary_text = ""
+        for c in classifications:
+            if c.get("index") == i:
+                cat = c.get("category", "other")
+                is_important = c.get("is_important", False)
+                summary_text = c.get("summary", "")
+                break
+
+        cat_name = EMAIL_CATEGORIES.get(cat, "其他")
+        badge = (
+            "⭐ "
+            if is_important
+            else ""
+        )
+        email_rows += f"""<tr>
+<td style='padding:8px;border:1px solid #e0e0e0;'>{em.get('from', '')}</td>
+<td style='padding:8px;border:1px solid #e0e0e0;'>{em.get('subject', '')}</td>
+<td style='padding:8px;border:1px solid #e0e0e0;text-align:center;'>{badge}{cat_name}</td>
+<td style='padding:8px;border:1px solid #e0e0e0;'>{summary_text}</td>
+</tr>\n"""
+
+    # 重要邮件摘要
+    important_section = ""
+    if important_summaries:
+        important_items = ""
+        for imp in important_summaries:
+            important_items += f"""
+<div style='background:#fff3cd;border-left:4px solid #ffc107;padding:12px;margin-bottom:8px;border-radius:4px;'>
+<strong>📌 {imp.get('subject', '')}</strong><br>
+<span style='color:#666;font-size:13px;'>来自: {imp.get('from', '')}</span><br>
+<span style='margin-top:4px;display:block;'>{imp.get('summary', '')}</span>
+</div>"""
+        important_section = f"""
+<div style='margin:24px 0;'>
+<h3 style='color:#d32f2f;'>🔔 重要邮件摘要</h3>
+{important_items}
+</div>"""
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style='font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width:800px; margin:0 auto; padding:20px; color:#333;'>
+<div style='background:linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding:24px; border-radius:12px; color:white; margin-bottom:24px;'>
+<h2 style='margin:0;'>📧 每日邮件整理</h2>
+<p style='margin:8px 0 0; opacity:0.9;'>{today_str}</p>
+</div>
+
+<div style='background:#f8f9fa; padding:16px; border-radius:8px; margin-bottom:24px;'>
+<p style='margin:0; font-size:18px;'>今日共收到 <strong style='color:#667eea; font-size:24px;'>{total}</strong> 封邮件</p>
+</div>
+
+<div style='margin-bottom:24px;'>
+<h3 style='color:#333;'>📊 分类统计</h3>
+<table style='width:100%; border-collapse:collapse;'>
+<tr style='background:#f0f0f0;'><th style='padding:8px;border:1px solid #e0e0e0;'>分类</th><th style='padding:8px;border:1px solid #e0e0e0;'>数量</th></tr>
+{category_rows}
+</table>
+</div>
+
+{important_section}
+
+<div style='margin-bottom:24px;'>
+<h3 style='color:#333;'>📋 邮件明细</h3>
+<table style='width:100%; border-collapse:collapse; font-size:14px;'>
+<tr style='background:#f0f0f0;'>
+<th style='padding:8px;border:1px solid #e0e0e0;'>发件人</th>
+<th style='padding:8px;border:1px solid #e0e0e0;'>主题</th>
+<th style='padding:8px;border:1px solid #e0e0e0;'>分类</th>
+<th style='padding:8px;border:1px solid #e0e0e0;'>摘要</th>
+</tr>
+{email_rows}
+</table>
+</div>
+
+<div style='text-align:center; color:#999; font-size:12px; margin-top:32px; padding-top:16px; border-top:1px solid #eee;'>
+此邮件由邮件管理智能体自动生成
+</div>
+</body>
+</html>"""
+    return html
+
+
+# ─────────────────── SMTP 发送 ───────────────────
+
+def _send_summary_email(config: dict, to_addr: str, subject: str, html_content: str) -> dict:
+    """通过 SMTP 发送 HTML 格式的总结邮件"""
+    msg = MIMEText(html_content, "html", "utf-8")
+    msg["From"] = formataddr(("邮件管理助手", config["account"]))
+    msg["To"] = to_addr
+    msg["Subject"] = Header(subject, "utf-8")
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid()
+
+    ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+
+    attempts = 3
+    last_err = None
+    for i in range(attempts):
+        try:
+            with smtplib.SMTP_SSL(
+                config["smtp_server"], config["smtp_port"], context=ctx, timeout=30
+            ) as server:
+                server.ehlo()
+                server.login(config["account"], config["auth_code"])
+                server.sendmail(config["account"], [to_addr], msg.as_string())
+                server.quit()
+            return {"status": "success", "message": f"总结邮件已发送至 {to_addr}"}
+        except (
+            smtplib.SMTPServerDisconnected,
+            smtplib.SMTPConnectError,
+            smtplib.SMTPDataError,
+            smtplib.SMTPHeloError,
+            ssl.SSLError,
+            OSError,
+        ) as e:
+            last_err = e
+            logger.warning(f"SMTP 发送尝试 {i+1} 失败: {e}")
+            time.sleep(2 * (i + 1))
+
+    error_msg = f"发送失败: {str(last_err)}" if last_err else "发送失败: 未知错误"
+    return {"status": "error", "message": error_msg}
+
+
+# ─────────────────── 核心流程 ───────────────────
+
+@observe
+def _daily_summary_impl() -> str:
+    """每日邮件总结核心逻辑"""
+    ctx = request_context.get() or new_context(method="daily_email_summary")
+    try:
+        config = get_email_config()
+        conn = connect_imap(config)
+
+        try:
+            status, _ = conn.select("INBOX", readonly=True)
+            if status != "OK":
+                return json.dumps(
+                    {"status": "error", "message": "无法打开收件箱"},
+                    ensure_ascii=False,
+                )
+
+            # 获取今天的日期（中国时区）
+            today = datetime.now(CST).date()
+            date_str = today.strftime("%d-%b-%Y")
+
+            # 按日期搜索今日邮件
+            search_query = f'(SINCE {date_str})'
+            status, data = conn.search(None, search_query)
+            if status != "OK":
+                return json.dumps(
+                    {"status": "error", "message": "邮件搜索失败"},
+                    ensure_ascii=False,
+                )
+
+            mail_ids = data[0].split()
+            if not mail_ids:
+                # 即使没有邮件也发送一封通知
+                today_str = today.strftime("%Y年%m月%d日")
+                html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style='font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;'>
+<div style='background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);padding:24px;border-radius:12px;color:white;'>
+<h2 style='margin:0;'>📧 每日邮件整理</h2>
+<p style='margin:8px 0 0;opacity:0.9;'>{today_str}</p>
+</div>
+<div style='background:#f8f9fa;padding:24px;border-radius:8px;margin-top:24px;text-align:center;'>
+<p style='font-size:18px;color:#666;'>🎉 今日没有收到新邮件</p>
+</div>
+</body></html>"""
+                subject = f"{today_str} 邮件整理"
+                send_result = _send_summary_email(config, config["account"], subject, html)
+                return json.dumps(
+                    {"status": "success", "message": "今日无新邮件，已发送空报告通知"},
+                    ensure_ascii=False,
+                )
+
+            # 获取每封邮件的详细内容
+            emails_data = []
+            for mid in mail_ids:
+                status, msg_data = conn.fetch(mid, "(RFC822)")
+                if status != "OK":
+                    continue
+
+                raw_email = msg_data[0][1]
+                msg = email.message_from_bytes(raw_email)
+
+                subject = decode_header_value(msg.get("Subject", ""))
+                from_addr = decode_header_value(msg.get("From", ""))
+                to_addr = decode_header_value(msg.get("To", ""))
+                date_str_email = msg.get("Date", "")
+                body = extract_body(msg, max_length=800)
+
+                emails_data.append({
+                    "from": from_addr,
+                    "to": to_addr,
+                    "subject": subject,
+                    "date": date_str_email,
+                    "body_preview": body[:500] if body else "(无正文)",
+                })
+
+            logger.info(f"获取到 {len(emails_data)} 封今日邮件，开始 LLM 分类")
+
+            # LLM 分类
+            classification_result = _classify_emails_with_llm(emails_data)
+
+            # 生成 HTML 报告
+            today_str = today.strftime("%Y年%m月%d日")
+            html_report = _generate_html_report(today_str, emails_data, classification_result)
+
+            # 发送总结邮件
+            subject = f"{today_str} 邮件整理"
+            send_result = _send_summary_email(config, config["account"], subject, html_report)
+
+            return json.dumps({
+                "status": "success",
+                "message": f"每日邮件总结已完成，共处理 {len(emails_data)} 封邮件",
+                "email_count": len(emails_data),
+                "send_result": send_result,
+            }, ensure_ascii=False)
+
+        finally:
+            conn.logout()
+
+    except Exception as e:
+        logger.error(f"Daily summary error: {e}", exc_info=True)
+        return json.dumps(
+            {"status": "error", "message": f"每日邮件总结失败: {str(e)}"},
+            ensure_ascii=False,
+        )
+
+
+@tool
+def daily_email_summary() -> str:
+    """生成并发送每日邮件总结报告。自动获取当日所有邮件，通过AI进行分类统计和重要邮件摘要，
+    生成HTML格式报告并发送到邮箱。主题格式为「YYYY年MM月DD日 邮件整理」。
+
+    Returns:
+        JSON 格式的执行结果
+    """
+    return _daily_summary_impl()
