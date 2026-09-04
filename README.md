@@ -1,12 +1,245 @@
-# 项目结构说明
+# 📧 智能邮件分类助手
 
-# 本地运行
-## 运行流程
-bash scripts/local_run.sh -m flow
+> 基于 AI 的全自动邮件管理工具，支持智能分类、自动标记、每日摘要推送，让收件箱永远整洁有序。
 
-## 运行节点
-bash scripts/local_run.sh -m node -n node_name
+[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
+[![LangGraph](https://img.shields.io/badge/LangGraph-1.0-green.svg)](https://langchain.com)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-# 启动HTTP服务
-bash scripts/http_run.sh -m http -p 5000
+---
 
+##  功能特性
+
+| 功能 | 说明 |
+|------|------|
+|  **全自动托管** | 无需手动操作，后台 7×24 小时自动运行 |
+| 📬 **智能分类** | AI 自动将邮件分为重要 / 次重要 / 不重要三级 |
+| ️ **自动标记** | 重要邮件标星、不重要邮件归档，收件箱自动整理 |
+| 📊 **每日摘要** | 每天 23:30 自动生成邮件总结报告，发送至邮箱 |
+|  **Gmail 跳转** | 重要邮件附带一键跳转链接，快速定位原文 |
+| ⏰ **定时任务** | 每小时自动检查新邮件，重要邮件即时通知 |
+|  **自定义规则** | 分类规则可配置，适配学校 / 企业 / 个人场景 |
+
+---
+
+## 🏗️ 系统架构
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Coze Coding 平台                         │
+│                                                             │
+│  ┌──────────┐    ┌──────────    ┌──────────────────────┐  │
+│  │ 定时调度器 │───▶│ 邮件获取  │───▶│  LLM 智能分类引擎    │  │
+│  │ Scheduler │    │ IMAP     │    │  (Doubao/DeepSeek)  │  │
+│  └──────────    └──────────┘    └──────────────────────┘  │
+│         │                                    │              │
+│         ▼                                    ▼              │
+│  ┌──────────┐    ┌──────────┐    ──────────────────────┐  │
+│  │ 自动标记  │◀───│ 分类结果  │◀───│  分类规则配置         │  │
+│  │ IMAP     │    │ 三级分类  │    │  (重要/次重要/不重要)  │  │
+│  └──────────┘    └──────────┘    └──────────────────────┘  │
+│         │                                    │              │
+│         ▼                                    ▼              │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │              每日摘要报告 (HTML + SMTP)                │  │
+│  │  分类统计 · 重要邮件摘要 · Gmail 跳转链接 · 待办提醒    │  │
+│  └──────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🚀 快速开始
+
+### 前置要求
+
+- Gmail 邮箱（已开启 IMAP）
+- [应用专用密码](https://myaccount.google.com/apppasswords)（Google 两步验证后生成）
+- [Coze Coding](https://code.coze.cn) 账号
+
+### 部署步骤
+
+#### 1. 克隆项目
+
+```bash
+git clone https://github.com/你的用户名/email-classifier-agent.git
+cd email-classifier-agent
+```
+
+#### 2. 在 Coze Coding 平台导入项目
+
+1. 登录 [Coze Coding](https://code.coze.cn)
+2. 点击 **「导入项目」** → 选择本地项目或 GitHub 仓库
+3. 等待依赖安装完成
+
+#### 3. 配置邮箱集成
+
+在 Coze Coding 平台的 **「集成」** 页面配置：
+
+| 配置项 | 说明 | 示例 |
+|--------|------|------|
+| `imap_server` | IMAP 服务器 | `imap.gmail.com` |
+| `imap_port` | IMAP 端口 | `993` |
+| `smtp_server` | SMTP 服务器 | `smtp.gmail.com` |
+| `smtp_port` | SMTP 端口 | `465` |
+| `account` | 邮箱地址 | `your@gmail.com` |
+| `auth_code` | 应用专用密码 | `xxxx xxxx xxxx xxxx` |
+
+#### 4. 配置环境变量
+
+在 **「环境变量」** 页面添加：
+
+| 变量名 | 值 |
+|--------|-----|
+| `EMAIL_WORKFLOW_API_TOKEN` | 你的工作流 API Token |
+
+#### 5. 部署项目
+
+点击右上角 **「部署」** 按钮，等待打包 → 构建 → 部署完成。
+
+---
+
+## 📋 分类规则
+
+系统采用三级分类体系，可根据使用场景自定义：
+
+### 🎓 学校场景（默认）
+
+| 等级 | 包含内容 | 自动操作 |
+|------|----------|----------|
+| 🔴 **重要** | 课程/考试通知、放假安排、停课通知 | 标星 + 即时通知 |
+| 🟡 **次重要** | 讲座通知、图书馆提醒、奖学金申请 | 标星 |
+|  **不重要** | 志愿者招募、社团宣传、广告推广 | 已读 + 归档 |
+
+### 💼 企业场景（可配置）
+
+| 等级 | 包含内容 | 自动操作 |
+|------|----------|----------|
+| 🔴 **重要** | 客户邮件、项目紧急事项、会议邀请 | 标星 + 即时通知 |
+| 🟡 **次重要** | 内部通知、周报提醒、系统告警 | 标星 |
+| ⚪ **不重要** | 营销邮件、订阅推送、社交通知 | 已读 + 归档 |
+
+---
+
+## 💬 对话指令
+
+部署完成后，你可以在对话界面使用以下指令：
+
+| 指令 | 效果 |
+|------|------|
+| `帮我看看今天的邮件` | 获取并分类今日邮件 |
+| `生成今日邮件总结` | 生成并发送每日摘要报告 |
+| `有多少封未读邮件` | 查询未读邮件数量 |
+| `把促销邮件都归档` | 批量归档指定类型邮件 |
+| `最近有什么重要邮件` | 筛选重要邮件列表 |
+
+---
+
+## 📁 项目结构
+
+```
+email-classifier-agent/
+├── src/
+│   ├── agents/
+│   │   └── agent.py              # 智能体主逻辑
+│   ├── tools/
+│   │   ├── email_fetcher.py      # 邮件获取工具
+│   │   ├── email_labeler.py      # 邮件标记工具
+│   │   ├── send_email.py         # 邮件发送工具
+│   │   ├── daily_summary.py      # 每日摘要工具
+│   │   ├── auto_manager.py       # 自动管理工具
+│   │   ├── coze_workflow.py      # 工作流调用工具
+│   │   └── scheduler.py          # 定时调度器
+│   ├── graphs/                   # 工作流图（可选）
+│   ├── storage/                  # 存储层
+│   └── main.py                   # 服务入口
+├── config/
+│   └── agent_llm_config.json     # 模型与提示词配置
+├── docs/
+│   └── USER_GUIDE.md             # 用户使用指南
+├── scripts/                      # 脚手架脚本
+├── pyproject.toml                # 依赖配置
+└── README.md
+```
+
+---
+
+## ⚙️ 自定义配置
+
+### 修改分类规则
+
+编辑 `config/agent_llm_config.json` 中的 `sp` 字段，修改分类规则描述即可。
+
+### 修改定时任务时间
+
+编辑 `src/tools/scheduler.py`：
+
+```python
+# 修改每日总结时间（默认 23:30）
+CronTrigger(hour=23, minute=30, timezone="Asia/Shanghai")
+
+# 修改自动检查频率（默认每小时）
+CronTrigger(hour='*', minute=0, timezone="Asia/Shanghai")
+```
+
+### 切换大模型
+
+编辑 `config/agent_llm_config.json` 中的 `model` 字段：
+
+```json
+{
+  "config": {
+    "model": "doubao-seed-2-0-lite-260215",
+    "temperature": 0.3
+  }
+}
+```
+
+---
+
+## ❓ 常见问题
+
+**Q: 不开电脑邮件也会自动处理吗？**  
+A: 是的。系统部署在云端，7×24 小时自动运行，无需本地电脑开机。
+
+**Q: 支持哪些邮箱？**  
+A: 支持所有 IMAP/SMTP 协议的邮箱（Gmail、Outlook、QQ、163 等）。
+
+**Q: 分类不准怎么办？**  
+A: 可以调整 `config/agent_llm_config.json` 中的分类规则描述，或切换更强的大模型。
+
+**Q: 如何修改摘要发送时间？**  
+A: 修改 `scheduler.py` 中的 CronTrigger 参数，重新部署即可。
+
+**Q: 可以多人共用吗？**  
+A: 每个邮箱需要独立部署一套。可以 Fork 本仓库后分别配置。
+
+---
+
+##  贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+1. Fork 本仓库
+2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 开启 Pull Request
+
+---
+
+## 📄 许可证
+
+[MIT License](LICENSE)
+
+---
+
+## 🙏 致谢
+
+- [LangChain](https://langchain.com) - 智能体框架
+- [Coze Coding](https://code.coze.cn) - 部署平台
+- [Doubao](https://www.coze.cn) - 大语言模型
+
+---
+
+**如果这个项目对你有帮助，欢迎 ⭐ Star 支持！**
