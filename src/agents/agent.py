@@ -19,6 +19,7 @@ from tools.email_fetcher import fetch_emails
 from tools.email_labeler import label_email
 from tools.send_email import send_email
 from tools.daily_summary import daily_email_summary
+from tools.coze_workflow import call_email_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ def build_agent(ctx=None):
     agent = create_agent(
         model=llm,
         system_prompt=cfg.get("sp"),
-        tools=[fetch_emails, label_email, send_email, daily_email_summary],
+        tools=[fetch_emails, label_email, send_email, daily_email_summary, call_email_workflow],
         middleware=[handle_tool_errors],
         checkpointer=get_memory_saver(),
         state_schema=AgentState,
