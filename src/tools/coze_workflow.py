@@ -19,11 +19,11 @@ def _call_workflow(days_to_fetch: int = 7, max_emails: int = 50) -> str:
     """调用 Coze 邮件分类管理工作流的核心逻辑"""
     ctx = request_context.get() or new_context(method="call_email_workflow")
     try:
-        api_token = os.environ.get("COZE_WORKFLOW_API_TOKEN", "")
+        api_token = os.environ.get("EMAIL_WORKFLOW_API_TOKEN", "")
         if not api_token:
             return json.dumps({
                 "status": "error",
-                "message": "未配置 COZE_WORKFLOW_API_TOKEN 环境变量，无法调用工作流"
+                "message": "未配置 EMAIL_WORKFLOW_API_TOKEN 环境变量，无法调用工作流"
             }, ensure_ascii=False)
 
         headers = {
