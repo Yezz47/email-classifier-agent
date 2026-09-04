@@ -21,23 +21,16 @@ logger = logging.getLogger(__name__)
 CST = timezone(timedelta(hours=8))
 
 EMAIL_CATEGORIES = {
-    "work": "工作",
-    "personal": "个人",
-    "promotion": "促销",
-    "finance": "财务",
-    "notification": "通知",
-    "social": "社交",
     "important": "重要",
-    "other": "其他",
+    "secondary": "次重要",
+    "unimportant": "不重要",
 }
 
 # 自动标记规则：分类 → (action, target_folder)
 AUTO_LABEL_RULES = {
-    "promotion": ("archive", ""),       # 促销 → 归档
-    "notification": ("mark_read", ""),  # 通知 → 标记已读
-    "important": ("mark_flagged", ""),  # 重要 → 标记星标
-    "work": ("mark_flagged", ""),       # 工作 → 标记星标
-    "finance": ("mark_flagged", ""),    # 财务 → 标记星标
+    "important": ("mark_flagged", ""),    # 重要 → 标记星标 + 发送通知
+    "secondary": ("mark_flagged", ""),    # 次重要 → 标记星标
+    "unimportant": ("archive", ""),       # 不重要 → 标记已读 + 归档
 }
 
 
@@ -69,18 +62,13 @@ def _classify_emails_llm(emails_data: list) -> list:
         for i, e in enumerate(emails_data)
     ], ensure_ascii=False)
 
-    prompt = f"""你是邮件分类助手。对以下邮件进行分类，严格按 JSON 数组返回：
-[{{"index": 0, "category": "work|personal|promotion|finance|notification|social|important|other", "is_important": true/false}}]
+    prompt = f"""你是学校邮件分类助手。对以下邮件进行三级分类，严格按 JSON 数组返回：
+[{{"index": 0, "category": "important|secondary|unimportant"}}]
 
 分类规则：
-- work: 工作相关（同事、客户、项目、会议）
-- personal: 朋友、家人私人邮件
-- promotion: 营销、广告、优惠
-- finance: 银行、账单、发票
-- notification: 系统通知、服务更新
-- social: 社交媒体通知
-- important: 需紧急处理的高优先级邮件
-- other: 其他
+- important（重要，需立即关注）：课程相关（选课、调课、作业截止）、考试相关（考试时间、考场、成绩）、放假通知、黑雨/暴雨停课通知、其他紧急学术事务
+- secondary（次重要，建议关注）：学校食品营养讲座、健康讲座、图书馆通知（借阅到期、新书上架）、学术讲座、奖学金/助学金申请通知
+- unimportant（不重要，可忽略）：招志愿者、社团宣传/招新、商业推广广告、其他非学术类通知
 
 邮件：{emails_json}"""
 
@@ -230,8 +218,7 @@ def auto_manage_emails() -> str:
 
             # 自动标记 + 收集重要邮件
             important_emails = []
-            stats = {"work": 0, "personal": 0, "promotion": 0, "finance": 0,
-                     "notification": 0, "social": 0, "important": 0, "other": 0}
+            stats = {"important": 0, "secondary": 0, "unimportant": 0}
             labeled_count = 0
 
             for cls in classifications:
@@ -248,8 +235,8 @@ def auto_manage_emails() -> str:
                         if _auto_label_email(conn, em["uid"], action):
                             labeled_count += 1
 
-                    # 收集重要邮件
-                    if is_important or cat == "important":
+                    # 收集重要和次重要邮件用于通知
+                    if cat in ("important", "secondary"):
                         important_emails.append({
                             "from": em["from"],
                             "subject": em["subject"],

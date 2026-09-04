@@ -29,14 +29,9 @@ CST = timezone(timedelta(hours=8))
 
 # 邮件分类定义
 EMAIL_CATEGORIES = {
-    "work": "工作",
-    "personal": "个人",
-    "promotion": "促销",
-    "finance": "财务",
-    "notification": "通知",
-    "social": "社交",
     "important": "重要",
-    "other": "其他",
+    "secondary": "次重要",
+    "unimportant": "不重要",
 }
 
 
@@ -71,15 +66,10 @@ def _classify_emails_with_llm(emails_data: list) -> dict:
 
     prompt = f"""你是一个专业的邮件分类助手。请对以下今日收到的邮件进行分类和总结。
 
-分类规则：
-- work（工作）：来自同事、客户、合作伙伴的工作相关邮件，包含项目、会议、报告等内容
-- personal（个人）：来自朋友、家人的私人邮件
-- promotion（促销）：营销推广、优惠活动、广告类邮件
-- finance（财务）：银行通知、账单、发票、交易确认等财务相关邮件
-- notification（通知）：系统通知、订阅确认、服务更新等自动化通知
-- social（社交）：社交媒体平台的通知、邀请、动态更新
-- important（重要）：需要紧急处理或高优先级的邮件
-- other（其他）：无法归入以上类别的邮件
+分类规则（三级分类）：
+- important（重要，需立即关注）：课程相关（选课、调课、作业截止）、考试相关（考试时间、考场、成绩）、放假通知、黑雨/暴雨停课通知、其他紧急学术事务
+- secondary（次重要，建议关注）：学校食品营养讲座、健康讲座、图书馆通知（借阅到期、新书上架）、学术讲座、奖学金/助学金申请通知
+- unimportant（不重要，可忽略）：招志愿者、社团宣传/招新、商业推广广告、其他非学术类通知
 
 邮件列表：
 {emails_json}
@@ -91,14 +81,9 @@ def _classify_emails_with_llm(emails_data: list) -> dict:
     ...
   ],
   "category_counts": {{
-    "work": 0,
-    "personal": 0,
-    "promotion": 0,
-    "finance": 0,
-    "notification": 0,
-    "social": 0,
     "important": 0,
-    "other": 0
+    "secondary": 0,
+    "unimportant": 0
   }},
   "important_summaries": [
     {{"index": 0, "from": "发件人", "subject": "主题", "summary": "详细摘要（2-3句话）", "message_id": "邮件的Message-ID"}}
@@ -129,10 +114,10 @@ def _classify_emails_with_llm(emails_data: list) -> dict:
         logger.error(f"LLM 返回的内容无法解析为 JSON: {content[:500]}")
         return {
             "classifications": [
-                {"index": i, "category": "other", "is_important": False, "summary": "分类失败"}
+                {"index": i, "category": "unimportant", "is_important": False, "summary": "分类失败"}
                 for i in range(len(emails_data))
             ],
-            "category_counts": {"other": len(emails_data)},
+            "category_counts": {"unimportant": len(emails_data)},
             "important_summaries": [
                 {"index": i, "from": emails_data[i].get("from", ""), "subject": emails_data[i].get("subject", ""),
                  "summary": "分类失败", "message_id": emails_data[i].get("message_id", "")}
