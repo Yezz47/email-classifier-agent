@@ -77,3 +77,72 @@ def extract_body(msg: email.message.Message, max_length: int = 1500) -> str:
     if len(body) > max_length:
         body = body[:max_length] + "...[truncated]"
     return body.strip()
+
+
+# Gmail 标签 → 期望的 IMAP 文件夹属性（根据属性动态解析，兼容不同界面语言的 modified UTF-7 命名）
+_LABEL_TO_ATTR = {
+    "important": "\\Important",
+    "starred": "\\Flagged",
+    "spam": "\\Junk",
+    "trash": "\\Trash",
+    "drafts": "\\Drafts",
+    "sent": "\\Sent",
+    "all_mail": "\\All",
+}
+
+# Gmail 标签 → 英文默认文件夹名（动态解析失败时的回退项）
+_LABEL_TO_DEFAULT = {
+    "important": "[Gmail]/Important",
+    "starred": "[Gmail]/Starred",
+    "spam": "[Gmail]/Spam",
+    "trash": "[Gmail]/Trash",
+    "drafts": "[Gmail]/Drafts",
+    "sent": "[Gmail]/Sent Mail",
+    "all_mail": "[Gmail]/All Mail",
+}
+
+
+def _parse_list_line(line: bytes):
+    """解析 IMAP LIST 返回行，返回 (attributes_list, folder_name)。"""
+    text = line.decode("utf-8", errors="replace").strip()
+    m = re.match(r'\((?P<attrs>[^)]*)\)\s+("[^"]*"|\S+)\s+(?P<name>"[^"]*"|\S+)$', text)
+    if not m:
+        return [], text
+    attrs = [a.strip() for a in m.group("attrs").split() if a.strip()]
+    name = m.group("name")
+    if name.startswith('"') and name.endswith('"'):
+        name = name[1:-1]
+    return attrs, name
+
+
+def _quoted_folder(name: str) -> str:
+    """IMAP 文件夹名用引号包裹，兼容含空格/方括号等特殊字符的名称。"""
+    if name.startswith('"') and name.endswith('"'):
+        return name
+    return f'"{name}"'
+
+
+def resolve_folder(conn: imaplib.IMAP4_SSL, label: str) -> str:
+    """将标签解析为当前账号实际可用的 IMAP 文件夹名（带引号）。
+
+    支持标签：inbox / important / starred / spam / trash / drafts / sent / all_mail，
+    也支持直接传入自定义文件夹名。优先按文件夹属性动态匹配（例如 Gmail 中文界面下
+    文件夹名可能是 "[Gmail]/&YkBnCZCuTvY-"），自动兼容不同界面语言；找不到时回退英文默认名。
+    """
+    key = (label or "").lower()
+    if key in ("", "inbox"):
+        return "INBOX"
+    want_attr = _LABEL_TO_ATTR.get(key)
+    default = _LABEL_TO_DEFAULT.get(key, label)
+    try:
+        status, data = conn.list()
+        if status == "OK":
+            for item in data:
+                attrs, name = _parse_list_line(item)
+                if name.upper() == "INBOX" or "\\Noselect" in attrs:
+                    continue
+                if want_attr and want_attr in attrs:
+                    return _quoted_folder(name)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("解析邮箱文件夹失败，回退默认名: %s", e)
+    return _quoted_folder(default)

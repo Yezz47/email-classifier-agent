@@ -12,7 +12,7 @@ from cozeloop.decorator import observe
 from coze_coding_utils.log.write_log import request_context
 from coze_coding_utils.runtime_ctx.context import new_context
 
-from tools.email_common import get_email_config, connect_imap, decode_header_value, extract_body
+from tools.email_common import get_email_config, connect_imap, decode_header_value, extract_body, resolve_folder
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +32,9 @@ def _fetch_emails_impl(
         conn = connect_imap(config)
 
         try:
-            # 选择邮箱文件夹
-            status, _ = conn.select(folder, readonly=True)
+            # 选择邮箱文件夹（解析标签名，兼容中文界面下的 modified UTF-7 名称）
+            actual_folder = resolve_folder(conn, folder)
+            status, _ = conn.select(actual_folder, readonly=True)
             if status != "OK":
                 return json.dumps({
                     "status": "error",

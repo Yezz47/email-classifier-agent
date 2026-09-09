@@ -10,7 +10,7 @@ from cozeloop.decorator import observe
 from coze_coding_utils.log.write_log import request_context
 from coze_coding_utils.runtime_ctx.context import new_context
 
-from tools.email_common import get_email_config, connect_imap
+from tools.email_common import get_email_config, connect_imap, resolve_folder
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +53,9 @@ def _label_email_impl(
         conn = connect_imap(config)
 
         try:
-            # 选择文件夹（需要可写模式）
-            status, _ = conn.select(folder)
+            # 选择文件夹（需要可写模式）：优先解析标签名，兼容中文界面下的 modified UTF-7 名称
+            actual_folder = resolve_folder(conn, folder)
+            status, _ = conn.select(actual_folder)
             if status != "OK":
                 return json.dumps({
                     "status": "error",
@@ -105,7 +106,7 @@ def _label_email_impl(
 
             elif action == "archive":
                 # 归档：COPY 到 All Mail + DELETE from INBOX
-                archive_folder = "[Gmail]/All Mail"
+                archive_folder = resolve_folder(conn, "all_mail")
                 status, _ = conn.copy(uid, archive_folder)
                 if status == "OK":
                     conn.store(uid, "+FLAGS", "\\Deleted")
@@ -130,7 +131,7 @@ def _label_email_impl(
                         "message": "移动邮件需要指定 target_folder 参数"
                     }, ensure_ascii=False)
 
-                actual_folder = GMAIL_LABEL_MAP.get(target_folder.lower(), target_folder)
+                actual_folder = resolve_folder(conn, target_folder)
 
                 status, _ = conn.copy(uid, actual_folder)
                 if status == "OK":
@@ -148,7 +149,7 @@ def _label_email_impl(
 
             elif action == "mark_important":
                 # 标记为重要（Gmail 特有）
-                important_folder = "[Gmail]/Important"
+                important_folder = resolve_folder(conn, "important")
                 status, _ = conn.copy(uid, important_folder)
                 if status == "OK":
                     return json.dumps({

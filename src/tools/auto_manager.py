@@ -14,7 +14,7 @@ from email.utils import formataddr, formatdate, make_msgid
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
-from tools.email_common import get_email_config, connect_imap, decode_header_value, extract_body
+from tools.email_common import get_email_config, connect_imap, decode_header_value, extract_body, resolve_folder
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,8 @@ def _auto_label_email(conn, uid: str, action: str, folder: str = "INBOX") -> boo
         elif action == "mark_flagged":
             conn.store(uid, "+FLAGS", "\\Flagged")
         elif action == "archive":
-            conn.copy(uid, "[Gmail]/All Mail")
+            all_mail = resolve_folder(conn, "all_mail")
+            conn.copy(uid, all_mail)
             conn.store(uid, "+FLAGS", "\\Deleted")
             conn.expunge()
         return True
