@@ -21,6 +21,7 @@ from coze_coding_utils.log.write_log import request_context
 from coze_coding_utils.runtime_ctx.context import new_context
 
 from tools.email_common import get_email_config, connect_imap, decode_header_value, extract_body
+from tools.llm_call import chat_completion_text
 
 logger = logging.getLogger(__name__)
 
@@ -44,23 +45,6 @@ def _classify_emails_with_llm(emails_data: list) -> dict:
 
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = json.load(f)
-
-    api_key = os.getenv("COZE_WORKLOAD_IDENTITY_API_KEY")
-    base_url = os.getenv("COZE_INTEGRATION_MODEL_BASE_URL")
-
-    llm = ChatOpenAI(
-        model=cfg["config"].get("model"),
-        api_key=api_key,
-        base_url=base_url,
-        temperature=0.3,
-        timeout=cfg["config"].get("timeout", 300),
-        max_tokens=cfg["config"].get("max_completion_tokens", 10000),
-        extra_body={
-            "thinking": {
-                "type": cfg["config"].get("thinking", "disabled")
-            }
-        },
-    )
 
     emails_json = json.dumps(emails_data, ensure_ascii=False, indent=2)
 
@@ -90,17 +74,11 @@ def _classify_emails_with_llm(emails_data: list) -> dict:
   ]
 }}"""
 
-    messages = [HumanMessage(content=prompt)]
-    response = llm.invoke(messages)
-    # response.content 可能是 str 或 list（多模态场景），统一转为 str
-    raw_content = response.content
-    if isinstance(raw_content, list):
-        content = " ".join(
-            item if isinstance(item, str) else item.get("text", "")
-            for item in raw_content
-        ).strip()
-    else:
-        content = str(raw_content).strip()
+    content = chat_completion_text(
+        prompt,
+        temperature=0.3,
+        max_tokens=cfg["config"].get("max_completion_tokens", 10000),
+    )
 
     # 提取 JSON（兼容 markdown 代码块包裹）
     if "```json" in content:

@@ -15,6 +15,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
 from tools.email_common import get_email_config, connect_imap, decode_header_value, extract_body, resolve_folder
+from tools.llm_call import chat_completion_text
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,6 @@ def _get_llm():
 
 def _classify_emails_llm(emails_data: list) -> list:
     """LLM 批量分类邮件，返回每封邮件的分类结果"""
-    llm = _get_llm()
     emails_json = json.dumps([
         {"index": i, "from": e["from"], "subject": e["subject"], "body": e["body_preview"]}
         for i, e in enumerate(emails_data)
@@ -72,8 +72,7 @@ def _classify_emails_llm(emails_data: list) -> list:
 
 邮件：{emails_json}"""
 
-    response = llm.invoke([HumanMessage(content=prompt)])
-    raw = response.content
+    raw = chat_completion_text(prompt, temperature=0.2, max_tokens=3000)
     if isinstance(raw, list):
         raw = " ".join(item if isinstance(item, str) else item.get("text", "") for item in raw).strip()
     else:
