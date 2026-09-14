@@ -22,6 +22,7 @@ from coze_coding_utils.runtime_ctx.context import new_context
 
 from tools.email_common import get_email_config, connect_imap, decode_header_value, extract_body
 from tools.llm_call import chat_completion_text
+from storage.calendar_store import init_db as _init_cal_db, list_all as _list_cal_all
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,84 @@ def _classify_emails_with_llm(emails_data: list) -> dict:
 
 # ─────────────────── HTML 报告生成 ───────────────────
 
+def _parse_event_dt(value):
+    """解析事件时间字符串，失败返回 None"""
+    if not value:
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, tz=CST)
+        v = str(value).replace("Z", "+00:00")
+        return datetime.fromisoformat(v)
+    except Exception:
+        return None
+
+
+def _fmt_dt(dt):
+    """格式化时间为 HH:mm"""
+    if not dt:
+        return ""
+    return dt.strftime("%m-%d %H:%M")
+
+
+def _build_timeline_section():
+    """从日历存储构建『重要时间节点』模块，返回 HTML 片段"""
+    try:
+        _init_cal_db()
+        events = _list_cal_all() or []
+        now = datetime.now(CST)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_end = today_start + timedelta(days=7)
+        tomorrow_start = today_start + timedelta(days=1)
+
+        created = [e for e in events if e.get("status") == "created"]
+        pending = [e for e in events if e.get("status") == "pending_confirm"]
+        failed = [e for e in events if e.get("status") == "failed"]
+
+        # 预解析已创建事件的时间
+        created_parsed = []
+        for e in created:
+            dt = _parse_event_dt(e.get("start_time"))
+            if dt is not None:
+                created_parsed.append((e, dt))
+        # 今日待处理
+        today_items = [e for e, dt in created_parsed if today_start <= dt < tomorrow_start]
+        # 即将到期（未来7天内，除今日）
+        upcoming = [e for e, dt in created_parsed if tomorrow_start <= dt <= week_end]
+
+        def _row(e, tag=""):
+            dt = _parse_event_dt(e.get("start_time"))
+            loc = e.get("location") or ""
+            return f"""<div style='background:#eef7ff;border-left:4px solid #2196f3;padding:10px;margin-bottom:6px;border-radius:4px;'>
+<strong>{e.get('title','')}</strong> {tag}<br>
+<span style='color:#666;font-size:13px;'>🕐 {_fmt_dt(dt)} &nbsp;|&nbsp; 📍 {loc if loc else '未指定地点'}</span>
+</div>"""
+
+        blocks = ""
+        if today_items:
+            rows = "".join(_row(e, "<span style='color:#d32f2f;font-size:12px;'>(今日)</span>") for e in sorted(today_items, key=lambda x: _parse_event_dt(x.get('start_time')) or now))
+            blocks += f"<div style='margin-bottom:14px;'><h4 style='margin:8px 0;color:#d32f2f;'>今日待处理</h4>{rows}</div>"
+        if upcoming:
+            rows = "".join(_row(e) for e in sorted(upcoming, key=lambda x: _parse_event_dt(x.get('start_time')) or now))
+            blocks += f"<div style='margin-bottom:14px;'><h4 style='margin:8px 0;color:#e65100;'>即将到期（7天内）</h4>{rows}</div>"
+        if pending:
+            rows = "".join(_row(e, "<span style='color:#795548;font-size:12px;'>(待确认)</span>") for e in pending[:10])
+            blocks += f"<div style='margin-bottom:14px;'><h4 style='margin:8px 0;color:#795548;'>等待确认</h4>{rows}</div>"
+        if failed:
+            rows = "".join(f"<div style='background:#ffebee;border-left:4px solid #f44336;padding:10px;margin-bottom:6px;border-radius:4px;'><strong>{e.get('title','')}</strong> <span style='color:#d32f2f;font-size:12px;'>(创建失败)</span><br><span style='color:#666;font-size:13px;'>{e.get('create_error','') or '创建失败，请稍后重试'}</span></div>" for e in failed[:10])
+            blocks += f"<div style='margin-bottom:14px;'><h4 style='margin:8px 0;color:#d32f2f;'>创建失败</h4>{rows}</div>"
+
+        if not blocks:
+            return ""
+        return f"""<div style='margin-bottom:24px;'>
+<h3 style='color:#333;'> 重要时间节点</h3>
+{blocks}
+</div>"""
+    except Exception as e:
+        logger.warning("构建重要时间节点模块失败: %s", e)
+        return ""
+
+
 def _generate_html_report(
     today_str: str,
     emails_data: list,
@@ -183,6 +262,9 @@ def _generate_html_report(
 {important_items}
 </div>"""
 
+    # 重要时间节点模块
+    timeline_section = _build_timeline_section()
+
     html = f"""<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"></head>
@@ -205,6 +287,8 @@ def _generate_html_report(
 </div>
 
 {important_section}
+
+{timeline_section}
 
 <div style='margin-bottom:24px;'>
 <h3 style='color:#333;'>📋 邮件明细</h3>

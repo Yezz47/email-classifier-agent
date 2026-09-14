@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage
 
 from tools.email_common import get_email_config, connect_imap, decode_header_value, extract_body, resolve_folder
 from tools.llm_call import chat_completion_text
+from tools.event_reminder import process_important_emails
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,8 @@ def auto_manage_emails() -> str:
 
             # 自动标记 + 收集重要邮件
             important_emails = []
+            # 日历提醒候选：重要/次重要邮件的完整数据（用于提取时间事项）
+            calendar_candidate_emails = []
             stats = {"important": 0, "secondary": 0, "unimportant": 0}
             labeled_count = 0
 
@@ -244,6 +247,14 @@ def auto_manage_emails() -> str:
                             "message_id": em["message_id"],
                             "summary": em["body_preview"][:200],
                         })
+                        # 同时收集完整数据用于日历提醒（含正文）
+                        calendar_candidate_emails.append({
+                            "from": em["from"],
+                            "subject": em["subject"],
+                            "date": em["date"],
+                            "body_preview": em["body_preview"],
+                            "message_id": em["message_id"],
+                        })
 
             result = {
                 "status": "success",
@@ -260,6 +271,21 @@ def auto_manage_emails() -> str:
                 sent = _send_notification(config, f"🔔 重要邮件提醒 - {today_str}", html)
                 result["notification_sent"] = sent
                 logger.info(f"重要邮件通知已发送: {len(important_emails)} 封")
+
+            # 日历提醒：对重要/次重要邮件提取时间事项并创建提醒
+            if calendar_candidate_emails:
+                try:
+                    calendar_result = process_important_emails(calendar_candidate_emails)
+                    result["calendar"] = calendar_result
+                    logger.info(
+                        f"日历提醒处理完成: 创建={len(calendar_result.get('created', []))} "
+                        f"待确认={len(calendar_result.get('pending_confirm', []))} "
+                        f"失败={len(calendar_result.get('failed', []))} "
+                        f"跳过={len(calendar_result.get('skipped', []))}"
+                    )
+                except Exception as ce:
+                    logger.error(f"日历提醒处理失败: {ce}", exc_info=True)
+                    result["calendar"] = {"status": "error", "message": str(ce)}
 
             logger.info(f"自动邮件管理完成: {json.dumps(result, ensure_ascii=False)}")
             return json.dumps(result, ensure_ascii=False)
